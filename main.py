@@ -21,9 +21,15 @@ print(f'Vocab size: {VOCAB_SIZE}')
 print(f'Train data size: {len(train_data)}')
 print(f'Val data size: {len(val_data)}')
 
+#Parmaeters
 BLOCK_SIZE = 8
 BATCH_SIZE = 32
 SEED = 4
+MAX_TRAIN_STEPS = 3000
+EVAL_INTERVAL = 300
+LR = 1e-3
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+MAX_EVAL_STEPS = 200
 
 torch.manual_seed(SEED)
 
@@ -82,14 +88,41 @@ class BigramLanguageModel(nn.Module):
         return idx
 
 model = BigramLanguageModel(VOCAB_SIZE)
+model.to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)   
 
-for step in range(1000):
+@torch.no_grad()
+def estimate_loss():
+    out = {'train': 0, 'val': 0}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(MAX_EVAL_STEPS)
+        for k in range(MAX_EVAL_STEPS):
+            x, y = get_batch(split)
+            x, y = x.to(device), y.to(device)
+            _, loss = model(x, y)
+            losses[k] = loss.item()
+        out[split] = losses.mean().item()
+    
+    model.train()
+    return out
+
+for step in range(MAX_TRAIN_STEPS):
+
+    #Eval if needed
+    if step % EVAL_INTERVAL == 0:
+        losses = estimate_loss()
+        print(f"Step: {step}, Train Loss: {losses['train']} Val Loss: {losses['val']}")
+
     x, y = get_batch('train')
+    x, y = x.to(device), y.to(device)
+
     optimizer.zero_grad()
     _, loss = model(x, y)
     loss.backward()
     optimizer.step()
 
-    if step % 10 == 0:
+    if step % 10000 == 0:
         print(f'Step: {step}, Loss: {loss.item()}')
+
+print(decode(model.generate(torch.zeros((1,1), dtype=torch.long, device=device), 100)[0].tolist()))
