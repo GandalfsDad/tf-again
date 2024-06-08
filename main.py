@@ -3,6 +3,8 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+from model import Block
+
 data = load_dataset()
 
 
@@ -22,14 +24,18 @@ print(f'Train data size: {len(train_data)}')
 print(f'Val data size: {len(val_data)}')
 
 #Parmaeters
-BLOCK_SIZE = 8
-BATCH_SIZE = 32
-SEED = 4
-MAX_TRAIN_STEPS = 3000
-EVAL_INTERVAL = 300
-LR = 1e-3
+BLOCK_SIZE = 16
+BATCH_SIZE = 16
+SEED = 42
+MAX_TRAIN_STEPS = 2000
+N_EMBED = 48
+N_HEADS = 6
+EVAL_INTERVAL = 10
+LR = 3e-4
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 MAX_EVAL_STEPS = 200
+N_BLOCKS = 4
+DROPOUT = 0.2
 
 torch.manual_seed(SEED)
 
@@ -49,14 +55,28 @@ def get_batch(split):
 # C Channels
 
 class BigramLanguageModel(nn.Module):
-    def __init__(self, vocab_size):
+    def __init__(self):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, vocab_size)
+        self.token_embedding = nn.Embedding(VOCAB_SIZE, N_EMBED)
+        self.position_embedding = nn.Embedding(BLOCK_SIZE, N_EMBED)
+        
+        self.blocks = nn.Sequential(*[Block(N_HEADS, N_EMBED, BLOCK_SIZE, DROPOUT) for _ in range(N_BLOCKS)])
+
+        self.ln = nn.LayerNorm(N_EMBED)
+        self.lm_head = nn.Linear(N_EMBED, VOCAB_SIZE)
 
     def forward(self, idx, targets = None):
-        #idx, and targets are of shape (B, T)
 
-        logits = self.embedding(idx) # (B, T, C)
+        B, T = idx.shape
+
+        token_emb = self.token_embedding(idx) # (B, T, C)
+        pos_emb = self.position_embedding(torch.arange(T, device=device)) # (T, C)
+        x = token_emb + pos_emb # (B, T, C) pos emb is broadcasted
+
+        x = self.blocks(x) # (B, T, C)
+        #x = self.ff(x) # (B, T, C)
+
+        logits = self.lm_head(x) # (B, T, VOCAB_SIZE)
 
         if targets is None:
             return logits, None
@@ -76,7 +96,10 @@ class BigramLanguageModel(nn.Module):
         B, T = idx.shape
 
         for _ in range(length):
-            logits, loss = self(idx)
+            # Trim to last BLOCK_SIZE characters
+            idx_cond = idx[:, -BLOCK_SIZE:] # (B, BLOCK_SIZE)
+            # get predictions
+            logits, loss = self(idx_cond)
             # get last time step
             logits = logits[:,-1, :] # (B, C)
             # get probabilities
@@ -87,7 +110,7 @@ class BigramLanguageModel(nn.Module):
             idx = torch.cat([idx, idx_next], dim=1) # (B, T+1)
         return idx
 
-model = BigramLanguageModel(VOCAB_SIZE)
+model = BigramLanguageModel()
 model.to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)   
 
@@ -122,7 +145,4 @@ for step in range(MAX_TRAIN_STEPS):
     loss.backward()
     optimizer.step()
 
-    if step % 10000 == 0:
-        print(f'Step: {step}, Loss: {loss.item()}')
-
-print(decode(model.generate(torch.zeros((1,1), dtype=torch.long, device=device), 100)[0].tolist()))
+print(decode(model.generate(torch.zeros((1,1), dtype=torch.long, device=device), 1000)[0].tolist()))
